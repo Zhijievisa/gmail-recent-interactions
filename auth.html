@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Connect Gmail</title>
+  <link rel="stylesheet" href="./css/section.css">
+  <style>
+    body { padding: 32px 24px; }
+    h1 { font-size: 18px; line-height: 24px; margin: 0 0 8px; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div class="stack">
+    <h1>Connect Gmail</h1>
+    <div class="muted small">Read-only access, used to list recent threads on Trello cards. The session lasts about an hour and stays in this browser.</div>
+    <div id="msg" class="notice" hidden></div>
+    <div class="actions"><button id="go" type="button" class="btn btn-primary" disabled>Sign in with Google</button></div>
+  </div>
+  <script src="./js/config.js"></script>
+  <script src="./js/auth.js"></script>
+  <script src="https://accounts.google.com/gsi/client" async defer onload="window.griGisLoaded && window.griGisLoaded()" onerror="window.griGisFailed && window.griGisFailed()"></script>
+</body>
+</html>
