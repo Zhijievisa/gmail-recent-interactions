@@ -123,11 +123,14 @@
     return api('/profile', token, fetchImpl);
   }
 
-  function recentInteractions(token, emails, max, fetchImpl) {
+  // Returns one page of emails, newest first. Pass the previous page's nextPageToken to get older ones.
+  function recentInteractions(token, emails, max, fetchImpl, pageToken) {
     var q = buildQuery(emails);
-    if (!q) return Promise.resolve({ items: [], hasMore: false });
+    if (!q) return Promise.resolve({ items: [], hasMore: false, nextPageToken: '' });
     var limit = Math.max(1, Math.min(Number(max) || 8, 20));
-    return api('/messages?maxResults=' + limit + '&q=' + encodeURIComponent(q), token, fetchImpl).then(function (list) {
+    var path = '/messages?maxResults=' + limit + '&q=' + encodeURIComponent(q) +
+      (pageToken ? '&pageToken=' + encodeURIComponent(pageToken) : '');
+    return api(path, token, fetchImpl).then(function (list) {
       var messages = list.messages || [];
       return Promise.all(messages.map(function (m) {
         return api('/messages/' + encodeURIComponent(m.id) +
@@ -135,9 +138,22 @@
       })).then(function (full) {
         var items = full.map(summarizeMessage).filter(Boolean);
         items.sort(function (x, y) { return y.date - x.date; });
-        return { items: items, hasMore: !!list.nextPageToken };
+        return { items: items, hasMore: !!list.nextPageToken, nextPageToken: list.nextPageToken || '' };
       });
     });
+  }
+
+  // Appends an older page to the rows already shown: no duplicates, still newest first.
+  function mergeItems(existing, more) {
+    var seen = {};
+    var out = [];
+    (existing || []).concat(more || []).forEach(function (it) {
+      if (!it || seen[it.id]) return;
+      seen[it.id] = true;
+      out.push(it);
+    });
+    out.sort(function (x, y) { return y.date - x.date; });
+    return out;
   }
 
   // Today → time; this year → "12 Aug"; older → "12 Aug 2022".
@@ -168,6 +184,7 @@
     summarizeMessage: summarizeMessage,
     getProfile: getProfile,
     recentInteractions: recentInteractions,
+    mergeItems: mergeItems,
     formatDate: formatDate
   };
 });

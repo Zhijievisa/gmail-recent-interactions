@@ -18,7 +18,8 @@
     editing: false,
     notice: '',
     showFallback: false, // offer the separate sign-in window
-    suggestions: []
+    suggestions: [],
+    list: null           // { items, nextPageToken, loadingMore } for the emails currently shown
   };
   var tokenClient = null;
   var gisState = 'idle'; // idle | loading | ready | failed
@@ -203,6 +204,7 @@
 
   function signOut() {
     state.session = null;
+    state.list = null;
     state.notice = '';
     t.clearSecret(SECRET_KEY).catch(function () {}).then(draw);
   }
@@ -301,16 +303,16 @@
   }
 
   function drawLoading() {
-    var n = Math.min(Number(CFG.MAX_ROWS || CFG.MAX_THREADS) || 8, 3);
+    var n = Math.min(Number(CFG.MAX_ROWS || CFG.MAX_THREADS) || 8, 3); // a few placeholder bars, not one per row
     var bars = [];
     for (var i = 0; i < n; i++) bars.push(el('div', { class: 'skel' }));
     show(bars);
   }
 
-  function footer(hasMore) {
+  function footer() {
     var account = state.session && state.session.email;
     return el('div', { class: 'footer' }, [
-      el('a', { href: G.searchUrl(state.emails, account), target: '_blank', rel: 'noopener noreferrer', text: hasMore ? 'More in Gmail' : 'Open in Gmail' }),
+      el('a', { href: G.searchUrl(state.emails, account), target: '_blank', rel: 'noopener noreferrer', text: 'Open in Gmail' }),
       el('span', { text: state.emails.join(', ') }),
       el('button', { type: 'button', class: 'linklike', text: 'Edit', onclick: startEditing }),
       el('span', { class: 'spacer' }),
@@ -319,14 +321,19 @@
     ]);
   }
 
-  function drawList(result) {
+  function rowsPerPage() {
+    return CFG.MAX_ROWS || CFG.MAX_THREADS;
+  }
+
+  function drawList() {
+    var list = state.list || { items: [], nextPageToken: '' };
     var account = state.session && state.session.email;
     var now = Date.now();
     var body;
-    if (!result.items.length) {
+    if (!list.items.length) {
       body = el('div', { class: 'panel muted', text: 'No emails found with ' + state.emails.join(', ') + ' in this mailbox.' });
     } else {
-      body = el('ul', { class: 'rows' }, result.items.map(function (it) {
+      body = el('ul', { class: 'rows' }, list.items.map(function (it) {
         var verb = it.direction === 'out' ? 'Sent' : 'Received';
         var meta = verb + ' \u00b7 ' + G.formatDate(it.date, now);
         return el('li', {}, [
@@ -340,7 +347,50 @@
         ]);
       }));
     }
-    show([noticeNode(), body, footer(result.hasMore)]);
+    var more = list.nextPageToken ? el('div', { class: 'morerow' }, [
+      el('button', {
+        type: 'button', class: 'btn', id: 'load-more', disabled: list.loadingMore ? '' : null,
+        text: list.loadingMore ? 'Loading\u2026' : 'Load more', onclick: loadMore
+      }),
+      el('span', { class: 'muted small', text: list.items.length + ' shown' })
+    ]) : null;
+    var keepScroll = app.querySelector('.rows') ? app.querySelector('.rows').scrollTop : 0;
+    return show([noticeNode(), body, more, footer()]).then(function () {
+      var rows = app.querySelector('.rows');
+      if (rows && keepScroll) rows.scrollTop = keepScroll;
+    });
+  }
+
+  // Fetches the next (older) page and appends it under the rows already shown.
+  function loadMore() {
+    var list = state.list;
+    if (!list || !list.nextPageToken || list.loadingMore) return;
+    var mine = seq; // a newer draw() (card data changed, sign-out…) cancels this request
+    list.loadingMore = true;
+    state.notice = '';
+    drawList();
+    G.recentInteractions(state.session.access_token, state.emails, rowsPerPage(), undefined, list.nextPageToken).then(function (result) {
+      if (mine !== seq || state.list !== list) return;
+      list.items = G.mergeItems(list.items, result.items);
+      list.nextPageToken = result.nextPageToken;
+      list.loadingMore = false;
+      drawList();
+    }).catch(function (err) {
+      if (mine !== seq || state.list !== list) return;
+      list.loadingMore = false;
+      if (err && err.code === 'AUTH') return expireSession();
+      state.notice = err && err.code === 'RATE' ? 'Gmail is rate-limiting requests. Try Load more again in a minute.'
+        : 'Could not load more emails' + (err && err.message && err.code ? ': ' + err.message : '. Check your connection and try again.');
+      drawList();
+    });
+  }
+
+  // Token expired or revoked: keep the address so reconnecting is one click.
+  function expireSession() {
+    var s = { access_token: '', exp: 0, email: (state.session && state.session.email) || '' };
+    state.notice = '';
+    state.list = null;
+    return saveSession(s).then(draw);
   }
 
   function drawError(err) {
@@ -372,18 +422,14 @@
     if (!isLive(state.session)) return drawConnect();
 
     drawLoading();
-    G.recentInteractions(state.session.access_token, state.emails, CFG.MAX_ROWS || CFG.MAX_THREADS).then(function (result) {
-      if (mine === seq) drawList(result);
+    G.recentInteractions(state.session.access_token, state.emails, rowsPerPage()).then(function (result) {
+      if (mine !== seq) return;
+      state.list = { items: result.items, nextPageToken: result.nextPageToken, loadingMore: false };
+      drawList();
     }).catch(function (err) {
       if (mine !== seq) return;
-      if (err && err.code === 'AUTH') {
-        // Token expired or revoked: keep the address for a one-click reconnect.
-        var s = { access_token: '', exp: 0, email: (state.session && state.session.email) || '' };
-        state.notice = '';
-        saveSession(s).then(draw);
-      } else {
-        drawError(err);
-      }
+      if (err && err.code === 'AUTH') expireSession();
+      else drawError(err);
     });
   }
 
