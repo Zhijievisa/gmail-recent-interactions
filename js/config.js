@@ -8,6 +8,6 @@ window.GRI_CONFIG = {
   // (e.g. 'example.com') so the Google account picker pre-selects it. Leave '' otherwise.
   WORKSPACE_DOMAIN: 'zhijievisa.com',
 
-  // How many recent threads to show on the card.
-  MAX_THREADS: 5
+  // How many recent emails (sent and received, one row each) to show on the card. Max 20.
+  MAX_ROWS: 8
 };

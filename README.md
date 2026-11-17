@@ -1,6 +1,6 @@
 # Gmail Recent Interactions — Trello 私有 Power-Up
 
-在 Trello 卡片背面加一个 "Recent interactions" 区块：打开卡片时，实时列出你的 Gmail 里与该卡片客户邮箱最近往来的 5 个邮件线程（主题、收/发、日期、封数），点击直达 Gmail。
+在 Trello 卡片背面加一个 "Recent interactions" 区块：打开卡片时，实时列出你的 Gmail 里与该卡片客户邮箱最近往来的 8 封邮件（收到的和发出的各占一行，显示主题、收/发、日期），点击直达 Gmail 里对应的会话。行数可在 `js/config.js` 的 `MAX_ROWS` 调整，上限 20。
 
 - 只读（`gmail.readonly`），只取邮件头（主题、日期），不取正文。
 - 邮件内容不写入 Trello，也不经过任何第三方服务器：浏览器直接问 Gmail。
@@ -60,7 +60,7 @@
 | 1 小时会话 | 纯前端方案拿不到 refresh token。要免重连，需要加一个保存 refresh token 的后端，安全面更大，本版本没做。 |
 | 卡内弹窗未在真实 Trello 中验证 | 代码已用模拟的 Trello / Google / Gmail 在 Chrome 中跑通，但 Google 弹窗从 Trello 的 iframe 里弹出这一步只能上线后验证。若被拦，区块会出现 "Trouble? Use the sign-in window" 备用入口（独立窗口登录）。 |
 | Gmail 深链 | 链接格式为 `mail.google.com/mail/u/?authuser=<邮箱>#all/<线程ID>`。浏览器里同时登录多个 Google 账号时依赖 `authuser` 参数选对账号。 |
-| 搜索范围 | `from / to / cc / bcc` 等于该地址的线程，不含草稿、垃圾箱、垃圾邮件。客户换邮箱发信就搜不到，需要把新地址也加到卡片。 |
+| 搜索范围 | `from / to / cc / bcc` 等于该地址的每一封邮件，不含草稿、垃圾箱、垃圾邮件。只搜当前登录的这个邮箱：同事从自己邮箱发给客户、又没有抄送本邮箱的邮件不会出现。客户换邮箱发信就搜不到，需要把新地址也加到卡片。 |
 
 ## 文件
 

@@ -1,4 +1,4 @@
-/* Card-back section: shows the most recent Gmail threads with this card's client email address(es). */
+/* Card-back section: shows the most recent Gmail emails (sent and received) with this card's client email address(es). */
 (function () {
   'use strict';
 
@@ -278,7 +278,7 @@
       noticeNode(),
       el('div', { class: 'muted small', text: state.emails.length
         ? 'Client email addresses for this card (visible to everyone on the board):'
-        : 'Add the client’s email address to see your recent Gmail threads with them. The address is saved on this card for everyone on the board.' }),
+        : 'Add the client’s email address to see your recent Gmail emails with them, sent and received. The address is saved on this card for everyone on the board.' }),
       chips, form, suggest, done
     ])]).then(function () { if (!state.emails.length || state.editing) input.focus({ preventScroll: true }); });
   }
@@ -290,8 +290,8 @@
     show([el('div', { class: 'panel stack' }, [
       noticeNode(),
       el('div', { class: 'muted small', text: expired
-        ? 'Gmail access lasts about an hour. Reconnect ' + state.session.email + ' to see threads with ' + who + '.'
-        : 'Connect your Gmail to see recent threads with ' + who + '. Read-only; nothing is copied into Trello.' }),
+        ? 'Gmail access lasts about an hour. Reconnect ' + state.session.email + ' to see emails with ' + who + '.'
+        : 'Connect your Gmail to see recent emails with ' + who + '. Read-only; nothing is copied into Trello.' }),
       el('div', { class: 'actions' }, [
         el('button', { type: 'button', class: 'btn btn-primary', text: expired ? 'Reconnect Gmail' : 'Connect Gmail', onclick: onConnectClick }),
         state.showFallback ? el('button', { type: 'button', class: 'linklike small', text: 'Trouble? Use the sign-in window', onclick: openSignInWindow }) : null,
@@ -301,7 +301,7 @@
   }
 
   function drawLoading() {
-    var n = Math.min(Number(CFG.MAX_THREADS) || 5, 3);
+    var n = Math.min(Number(CFG.MAX_ROWS || CFG.MAX_THREADS) || 8, 3);
     var bars = [];
     for (var i = 0; i < n; i++) bars.push(el('div', { class: 'skel' }));
     show(bars);
@@ -328,10 +328,10 @@
     } else {
       body = el('ul', { class: 'rows' }, result.items.map(function (it) {
         var verb = it.direction === 'out' ? 'Sent' : 'Received';
-        var meta = verb + ' · ' + G.formatDate(it.lastDate, now) + (it.count > 1 ? ' · ' + it.count + ' messages' : '');
+        var meta = verb + ' \u00b7 ' + G.formatDate(it.date, now);
         return el('li', {}, [
-          el('a', { class: 'row', href: G.threadUrl(it.id, account), target: '_blank', rel: 'noopener noreferrer', title: it.subject }, [
-            el('span', { class: 'dir dir-' + it.direction, title: 'Last message: ' + verb.toLowerCase() }, [arrowIcon(it.direction)]),
+          el('a', { class: 'row', href: G.threadUrl(it.threadId, account), target: '_blank', rel: 'noopener noreferrer', title: it.subject }, [
+            el('span', { class: 'dir dir-' + it.direction, title: verb }, [arrowIcon(it.direction)]),
             el('span', { class: 'main' }, [
               el('span', { class: 'subject' + (it.unread ? ' unread' : ''), text: it.subject }),
               el('span', { class: 'meta', text: meta })
@@ -372,7 +372,7 @@
     if (!isLive(state.session)) return drawConnect();
 
     drawLoading();
-    G.recentInteractions(state.session.access_token, state.emails, CFG.MAX_THREADS).then(function (result) {
+    G.recentInteractions(state.session.access_token, state.emails, CFG.MAX_ROWS || CFG.MAX_THREADS).then(function (result) {
       if (mine === seq) drawList(result);
     }).catch(function (err) {
       if (mine !== seq) return;

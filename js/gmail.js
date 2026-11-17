@@ -89,22 +89,19 @@
     });
   }
 
-  function summarizeThread(thread) {
-    var messages = ((thread && thread.messages) || []).filter(function (m) {
-      return (m.labelIds || []).indexOf('DRAFT') === -1;
-    });
-    if (!messages.length) return null;
-    messages.sort(function (a, b) { return Number(a.internalDate) - Number(b.internalDate); });
-    var first = messages[0];
-    var last = messages[messages.length - 1];
-    var subject = decodeRfc2047(header(first, 'Subject')).trim() || '(no subject)';
+  // One row per email (not per conversation), so mail we sent is listed in its own right even when
+  // it sits inside a longer thread whose latest message came from someone else.
+  function summarizeMessage(message) {
+    if (!message || !message.id) return null;
+    var labels = message.labelIds || [];
+    if (labels.indexOf('DRAFT') !== -1) return null;
     return {
-      id: thread.id,
-      subject: subject,
-      lastDate: Number(last.internalDate) || 0,
-      direction: (last.labelIds || []).indexOf('SENT') !== -1 ? 'out' : 'in',
-      count: messages.length,
-      unread: messages.some(function (m) { return (m.labelIds || []).indexOf('UNREAD') !== -1; })
+      id: message.id,
+      threadId: message.threadId || message.id,
+      subject: decodeRfc2047(header(message, 'Subject')).trim() || '(no subject)',
+      date: Number(message.internalDate) || 0,
+      direction: labels.indexOf('SENT') !== -1 ? 'out' : 'in',
+      unread: labels.indexOf('UNREAD') !== -1
     };
   }
 
@@ -129,15 +126,15 @@
   function recentInteractions(token, emails, max, fetchImpl) {
     var q = buildQuery(emails);
     if (!q) return Promise.resolve({ items: [], hasMore: false });
-    var limit = Math.max(1, Math.min(Number(max) || 5, 20));
-    return api('/threads?maxResults=' + limit + '&q=' + encodeURIComponent(q), token, fetchImpl).then(function (list) {
-      var threads = list.threads || [];
-      return Promise.all(threads.map(function (th) {
-        return api('/threads/' + encodeURIComponent(th.id) +
+    var limit = Math.max(1, Math.min(Number(max) || 8, 20));
+    return api('/messages?maxResults=' + limit + '&q=' + encodeURIComponent(q), token, fetchImpl).then(function (list) {
+      var messages = list.messages || [];
+      return Promise.all(messages.map(function (m) {
+        return api('/messages/' + encodeURIComponent(m.id) +
           '?format=metadata&metadataHeaders=Subject&metadataHeaders=Date', token, fetchImpl);
       })).then(function (full) {
-        var items = full.map(summarizeThread).filter(Boolean);
-        items.sort(function (a, b) { return b.lastDate - a.lastDate; });
+        var items = full.map(summarizeMessage).filter(Boolean);
+        items.sort(function (x, y) { return y.date - x.date; });
         return { items: items, hasMore: !!list.nextPageToken };
       });
     });
@@ -168,7 +165,7 @@
     threadUrl: threadUrl,
     searchUrl: searchUrl,
     decodeRfc2047: decodeRfc2047,
-    summarizeThread: summarizeThread,
+    summarizeMessage: summarizeMessage,
     getProfile: getProfile,
     recentInteractions: recentInteractions,
     formatDate: formatDate
