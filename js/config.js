@@ -9,5 +9,5 @@ window.GRI_CONFIG = {
   WORKSPACE_DOMAIN: 'zhijievisa.com',
 
   // How many recent emails (sent and received, one row each) to show on the card. Max 20.
-  MAX_ROWS: 8
+  MAX_ROWS: 20
 };

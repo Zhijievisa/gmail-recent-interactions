@@ -1,6 +1,6 @@
 # Gmail Recent Interactions — Trello 私有 Power-Up
 
-在 Trello 卡片背面加一个 "Recent interactions" 区块：打开卡片时，实时列出你的 Gmail 里与该卡片客户邮箱最近往来的 8 封邮件（收到的和发出的各占一行，显示主题、收/发、日期），点击直达 Gmail 里对应的会话。行数可在 `js/config.js` 的 `MAX_ROWS` 调整，上限 20。
+在 Trello 卡片背面加一个 "Recent interactions" 区块：打开卡片时，实时列出你的 Gmail 里与该卡片客户邮箱最近往来的 20 封邮件（收到的和发出的各占一行，显示主题、收/发、日期），点击直达 Gmail 里对应的会话。行数可在 `js/config.js` 的 `MAX_ROWS` 调整，上限 20。
 
 - 只读（`gmail.readonly`），只取邮件头（主题、日期），不取正文。
 - 邮件内容不写入 Trello，也不经过任何第三方服务器：浏览器直接问 Gmail。
