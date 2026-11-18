@@ -32,14 +32,113 @@
     return cleanEmailList(found.map(function (s) { return s.replace(/\.+$/, ''); }));
   }
 
-  // {a b c} is Gmail's OR group. Matches mail from the address or sent to it in any recipient field.
-  function buildQuery(emails) {
-    var terms = [];
-    cleanEmailList(emails).forEach(function (e) {
-      terms.push('from:' + e, 'to:' + e, 'cc:' + e, 'bcc:' + e);
+  var MAX_KEYWORDS_PER_CARD = 6;
+  var MAX_LABEL_LENGTH = 80;
+
+  // A matter keyword (court file number, party name) is always sent to Gmail as a quoted phrase, so only
+  // characters that cannot break out of the quotes or act as search operators are allowed.
+  // Latin-only keywords need 4+ characters so a bare surname or initials cannot pull in other matters.
+  function normalizeKeyword(value) {
+    var s = String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+    if (!s || s.length > 60) return null;
+    if (!/^[\p{L}\p{N}][\p{L}\p{N} .&'\/_-]*$/u.test(s)) return null;
+    var min = /^[\x00-\x7F]*$/.test(s) ? 4 : 2;
+    return s.replace(/[^\p{L}\p{N}]/gu, '').length >= min ? s : null;
+  }
+
+  function cleanKeywordList(list) {
+    var out = [], seen = {};
+    (Array.isArray(list) ? list : []).forEach(function (item) {
+      var k = normalizeKeyword(item);
+      if (k && !seen[k.toLowerCase()]) { seen[k.toLowerCase()] = true; out.push(k); }
     });
-    if (!terms.length) return '';
-    return '{' + terms.join(' ') + '} -in:draft -in:chats';
+    return out.slice(0, MAX_KEYWORDS_PER_CARD);
+  }
+
+  // The Gmail label is stored by its display name, because label ids differ between mailboxes.
+  function normalizeLabel(value) {
+    var s = String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+    if (!s || s.length > MAX_LABEL_LENGTH) return '';
+    return /[\p{L}\p{N}]/u.test(s) ? s : '';
+  }
+
+  // Gmail's label: operator takes the name with spaces, slashes and punctuation written as hyphens.
+  function labelTerm(name) {
+    var n = normalizeLabel(name);
+    if (!n) return '';
+    var slug = n.toLowerCase().replace(/[^\p{L}\p{N}_]+/gu, '-').replace(/^-+|-+$/g, '');
+    return slug ? 'label:' + slug : '';
+  }
+
+  // What a card matches. A plain array is the original form: client addresses only.
+  //   emails   - client addresses: every email with them is shown
+  //   shared   - addresses used across matters (other side's lawyer, court registry):
+  //              shown only when the email also contains one of the matter keywords
+  //   keywords - court file number, party names
+  //   label    - a Gmail label: everything under it is shown
+  function cleanSpec(spec) {
+    if (Array.isArray(spec)) spec = { emails: spec };
+    spec = spec || {};
+    var emails = cleanEmailList(spec.emails);
+    return {
+      emails: emails,
+      shared: cleanEmailList(spec.shared).filter(function (e) { return emails.indexOf(e) === -1; }),
+      keywords: cleanKeywordList(spec.keywords),
+      label: normalizeLabel(spec.label)
+    };
+  }
+
+  function addressGroup(list) {
+    var terms = [];
+    list.forEach(function (e) { terms.push('from:' + e, 'to:' + e, 'cc:' + e, 'bcc:' + e); });
+    return '{' + terms.join(' ') + '}'; // {a b c} is Gmail's OR group
+  }
+
+  // Shared addresses with no keyword are left out of the search entirely: they never fall back to "all mail".
+  function hasSource(spec) {
+    var s = cleanSpec(spec);
+    return !!(s.emails.length || (s.shared.length && s.keywords.length) || labelTerm(s.label));
+  }
+
+  function sharedIgnored(spec) {
+    var s = cleanSpec(spec);
+    return s.shared.length > 0 && !s.keywords.length;
+  }
+
+  function buildQuery(spec) {
+    var s = cleanSpec(spec);
+    var parts = [];
+    if (s.emails.length) parts.push(addressGroup(s.emails));
+    if (s.shared.length && s.keywords.length) {
+      parts.push('(' + addressGroup(s.shared) + ' {' +
+        s.keywords.map(function (k) { return '"' + k + '"'; }).join(' ') + '})');
+    }
+    var lt = labelTerm(s.label);
+    if (lt) parts.push(lt);
+    if (!parts.length) return '';
+    var core = parts.length === 1 ? parts[0] : '(' + parts.join(' OR ') + ')';
+    return core + ' -in:draft -in:chats';
+  }
+
+  function describe(spec) {
+    var s = cleanSpec(spec);
+    var bits = s.emails.slice();
+    if (s.shared.length && s.keywords.length) bits.push(s.shared.join(', ') + ' (matter keywords only)');
+    if (s.label) bits.push('label "' + s.label + '"');
+    return bits.join(', ');
+  }
+
+  // Names of the mailbox's own labels, for the label picker and the "not in this mailbox" warning.
+  function listLabels(token, fetchImpl) {
+    return api('/labels', token, fetchImpl).then(function (res) {
+      return ((res && res.labels) || []).filter(function (l) { return l && l.type === 'user' && l.name; })
+        .map(function (l) { return String(l.name); }).sort(function (a, b) { return a.localeCompare(b); });
+    });
+  }
+
+  function labelKnown(name, names) {
+    var want = labelTerm(name);
+    return !!want && (names || []).some(function (n) { return labelTerm(n) === want; });
   }
 
   function mailBase(account) {
@@ -50,8 +149,8 @@
     return mailBase(account) + '#all/' + encodeURIComponent(threadId);
   }
 
-  function searchUrl(emails, account) {
-    return mailBase(account) + '#search/' + encodeURIComponent(buildQuery(emails));
+  function searchUrl(spec, account) {
+    return mailBase(account) + '#search/' + encodeURIComponent(buildQuery(spec));
   }
 
   function header(message, name) {
@@ -124,8 +223,8 @@
   }
 
   // Returns one page of emails, newest first. Pass the previous page's nextPageToken to get older ones.
-  function recentInteractions(token, emails, max, fetchImpl, pageToken) {
-    var q = buildQuery(emails);
+  function recentInteractions(token, spec, max, fetchImpl, pageToken) {
+    var q = buildQuery(spec);
     if (!q) return Promise.resolve({ items: [], hasMore: false, nextPageToken: '' });
     var limit = Math.max(1, Math.min(Number(max) || 8, 20));
     var path = '/messages?maxResults=' + limit + '&q=' + encodeURIComponent(q) +
@@ -174,6 +273,17 @@
 
   return {
     MAX_EMAILS_PER_CARD: MAX_EMAILS_PER_CARD,
+    MAX_KEYWORDS_PER_CARD: MAX_KEYWORDS_PER_CARD,
+    normalizeKeyword: normalizeKeyword,
+    cleanKeywordList: cleanKeywordList,
+    normalizeLabel: normalizeLabel,
+    labelTerm: labelTerm,
+    cleanSpec: cleanSpec,
+    hasSource: hasSource,
+    sharedIgnored: sharedIgnored,
+    describe: describe,
+    listLabels: listLabels,
+    labelKnown: labelKnown,
     normalizeEmail: normalizeEmail,
     cleanEmailList: cleanEmailList,
     extractEmails: extractEmails,

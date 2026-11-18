@@ -7,6 +7,9 @@
   var SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
   var SECRET_KEY = 'gri_token';   // browser-local, encrypted by Trello's client library
   var EMAILS_KEY = 'gri_emails';  // card / shared pluginData: array of client email addresses
+  var SHARED_KEY = 'gri_shared';  // addresses used across matters (other side's lawyer, court registry)
+  var KEYWORDS_KEY = 'gri_keywords'; // matter keywords that a shared address's email must contain
+  var LABEL_KEY = 'gri_label';    // Gmail label name: everything under it is shown
   var GIS_SRC = 'https://accounts.google.com/gsi/client';
 
   var t = window.TrelloPowerUp.iframe();
@@ -14,6 +17,10 @@
 
   var state = {
     emails: [],
+    shared: [],
+    keywords: [],
+    label: '',
+    labelNames: null,    // this mailbox's label names, once fetched
     session: null,       // { access_token, exp, email }
     editing: false,
     notice: '',
@@ -95,6 +102,47 @@
     return t.set('card', 'shared', EMAILS_KEY, clean).then(function () {
       state.emails = clean;
     });
+  }
+
+  function loadMatter() {
+    return Promise.all([
+      t.get('card', 'shared', SHARED_KEY, []),
+      t.get('card', 'shared', KEYWORDS_KEY, []),
+      t.get('card', 'shared', LABEL_KEY, '')
+    ]).then(function (r) {
+      return { shared: G.cleanEmailList(r[0]), keywords: G.cleanKeywordList(r[1]), label: G.normalizeLabel(r[2]) };
+    }).catch(function () { return { shared: [], keywords: [], label: '' }; });
+  }
+
+  function saveShared(list) {
+    var clean = G.cleanEmailList(list);
+    return t.set('card', 'shared', SHARED_KEY, clean).then(function () { state.shared = clean; });
+  }
+
+  function saveKeywords(list) {
+    var clean = G.cleanKeywordList(list);
+    return t.set('card', 'shared', KEYWORDS_KEY, clean).then(function () { state.keywords = clean; });
+  }
+
+  function saveLabel(name) {
+    var clean = G.normalizeLabel(name);
+    return t.set('card', 'shared', LABEL_KEY, clean).then(function () { state.label = clean; });
+  }
+
+  function spec() {
+    return { emails: state.emails, shared: state.shared, keywords: state.keywords, label: state.label };
+  }
+
+  // Fetched once per signed-in session; used for the label suggestions and the "not in this mailbox" warning.
+  function ensureLabelNames() {
+    if (state.labelNames || !isLive(state.session)) return;
+    var token = state.session.access_token;
+    state.labelNames = [];
+    G.listLabels(token).then(function (names) {
+      if (!state.session || state.session.access_token !== token) return;
+      state.labelNames = names;
+      if (state.editing) drawEditor(); else if (state.list && state.label) drawList();
+    }).catch(function () { /* suggestions only */ });
   }
 
   /* ---------- Google sign-in ---------- */
@@ -194,6 +242,7 @@
     state.notice = '';
     state.showFallback = false;
     state.session = session;
+    state.labelNames = null;
     drawLoading();
     G.getProfile(accessToken).then(function (p) {
       if (p && p.emailAddress) session.email = String(p.emailAddress).toLowerCase();
@@ -204,6 +253,7 @@
 
   function signOut() {
     state.session = null;
+    state.labelNames = null;
     state.list = null;
     state.notice = '';
     t.clearSecret(SECRET_KEY).catch(function () {}).then(draw);
@@ -272,22 +322,96 @@
       })
     )) : null;
 
-    var done = state.emails.length ? el('div', { class: 'actions' }, [
+    var done = G.hasSource(spec()) ? el('div', { class: 'actions' }, [
       el('button', { type: 'button', class: 'btn', text: 'Done', onclick: function () { state.editing = false; state.notice = ''; draw(); } })
     ]) : null;
+
+    function fail() {
+      state.notice = 'Could not save to this card (you may not have edit rights on this board).';
+      drawEditor();
+    }
+
+    // A labelled chip list with its own add row.
+    function group(opts) {
+      var box = el('input', { type: opts.type || 'text', placeholder: opts.placeholder, 'aria-label': opts.title,
+        autocomplete: 'off', spellcheck: 'false', id: opts.id });
+      var list = opts.items.length ? el('div', { class: 'chips' }, opts.items.map(function (v) {
+        return el('span', { class: 'chip' }, [
+          el('span', { text: v }),
+          el('button', { type: 'button', 'aria-label': 'Remove ' + v, title: 'Remove', text: '\u00d7', onclick: function () {
+            state.notice = '';
+            opts.save(opts.items.filter(function (x) { return x !== v; })).then(drawEditor).catch(fail);
+          } })
+        ]);
+      })) : null;
+      return el('div', { class: 'group stack' }, [
+        el('div', { class: 'grouptitle', text: opts.title }),
+        el('div', { class: 'muted small', text: opts.help }),
+        list,
+        el('form', { class: 'addrow', novalidate: '', onsubmit: function (ev) {
+          ev.preventDefault();
+          var v = opts.normalize(box.value);
+          if (!v) { state.notice = opts.invalid; return drawEditor(); }
+          if (opts.items.some(function (x) { return x.toLowerCase() === v.toLowerCase(); })) { state.notice = 'That is already on this card.'; return drawEditor(); }
+          if (opts.items.length >= opts.max) { state.notice = 'Up to ' + opts.max + ' per card.'; return drawEditor(); }
+          if (opts.reject && opts.reject(v)) { state.notice = opts.reject(v); return drawEditor(); }
+          state.notice = '';
+          opts.save(opts.items.concat([v])).then(drawEditor).catch(fail);
+        } }, [box, el('button', { type: 'submit', class: 'btn', text: 'Add' })])
+      ]);
+    }
+
+    var sharedGroup = group({
+      id: 'shared-input', title: 'Shared addresses', type: 'email', placeholder: 'lawyer@otherside.com.au',
+      help: 'Addresses that also appear in other matters, such as the other side\u2019s lawyer or a court registry. Their emails are shown only when they contain one of the matter keywords below.',
+      items: state.shared, max: G.MAX_EMAILS_PER_CARD, normalize: G.normalizeEmail, save: saveShared,
+      invalid: 'That does not look like a single email address.',
+      reject: function (v) { return state.emails.indexOf(v) !== -1 ? 'That address is already a client address on this card.' : ''; }
+    });
+
+    var keywordGroup = group({
+      id: 'keyword-input', title: 'Matter keywords', placeholder: 'CIV-25-001234',
+      help: 'Court file number first, then party names. Used only with the shared addresses above.',
+      items: state.keywords, max: G.MAX_KEYWORDS_PER_CARD, normalize: G.normalizeKeyword, save: saveKeywords,
+      invalid: 'Use letters, numbers, spaces and - . / & only, at least 4 characters (2 for non-Latin names).'
+    });
+
+    var labelInput = el('input', { type: 'text', placeholder: 'Gmail label name', 'aria-label': 'Gmail label',
+      autocomplete: 'off', spellcheck: 'false', id: 'label-input', list: 'label-names', value: state.label || null });
+    var labelGroup = el('div', { class: 'group stack' }, [
+      el('div', { class: 'grouptitle', text: 'Gmail label' }),
+      el('div', { class: 'muted small', text: 'Every email under this label is shown, whoever it is from. Each person sees the label in their own mailbox.' }),
+      el('datalist', { id: 'label-names' }, (state.labelNames || []).map(function (n) { return el('option', { value: n }); })),
+      el('form', { class: 'addrow', novalidate: '', onsubmit: function (ev) {
+        ev.preventDefault();
+        var raw = labelInput.value.trim();
+        var v = G.normalizeLabel(raw);
+        if (raw && !G.labelTerm(v)) { state.notice = 'That label name cannot be used.'; return drawEditor(); }
+        state.notice = (v && state.labelNames && state.labelNames.length && !G.labelKnown(v, state.labelNames))
+          ? 'Saved, but there is no label "' + v + '" in ' + ((state.session && state.session.email) || 'this mailbox') + ' yet.' : '';
+        saveLabel(v).then(drawEditor).catch(fail);
+      } }, [labelInput, el('button', { type: 'submit', class: 'btn', text: state.label ? 'Update' : 'Set' })])
+    ]);
+
+    var matter = el('details', { class: 'matter', open: (state.shared.length || state.keywords.length || state.label) ? '' : null,
+      ontoggle: function () { t.sizeTo('#app').catch(function () {}); } }, [
+      el('summary', { text: 'Litigation matter: shared addresses, keywords, label' }),
+      sharedGroup, keywordGroup, labelGroup
+    ]);
+    ensureLabelNames();
 
     show([el('div', { class: 'panel stack' }, [
       noticeNode(),
       el('div', { class: 'muted small', text: state.emails.length
         ? 'Client email addresses for this card (visible to everyone on the board):'
         : 'Add the client’s email address to see your recent Gmail emails with them, sent and received. The address is saved on this card for everyone on the board.' }),
-      chips, form, suggest, done
-    ])]).then(function () { if (!state.emails.length || state.editing) input.focus({ preventScroll: true }); });
+      chips, form, suggest, matter, done
+    ])]).then(function () { if (!G.hasSource(spec()) && !state.shared.length) input.focus({ preventScroll: true }); });
   }
 
   function drawConnect() {
     ensureGis();
-    var who = state.emails.join(', ');
+    var who = G.describe(spec());
     var expired = state.session && state.session.email;
     show([el('div', { class: 'panel stack' }, [
       noticeNode(),
@@ -312,8 +436,8 @@
   function footer() {
     var account = state.session && state.session.email;
     return el('div', { class: 'footer' }, [
-      el('a', { href: G.searchUrl(state.emails, account), target: '_blank', rel: 'noopener noreferrer', text: 'Open in Gmail' }),
-      el('span', { text: state.emails.join(', ') }),
+      el('a', { href: G.searchUrl(spec(), account), target: '_blank', rel: 'noopener noreferrer', text: 'Open in Gmail' }),
+      el('span', { text: G.describe(spec()) }),
       el('button', { type: 'button', class: 'linklike', text: 'Edit', onclick: startEditing }),
       el('span', { class: 'spacer' }),
       account ? el('span', { text: account }) : null,
@@ -331,7 +455,7 @@
     var now = Date.now();
     var body;
     if (!list.items.length) {
-      body = el('div', { class: 'panel muted', text: 'No emails found with ' + state.emails.join(', ') + ' in this mailbox.' });
+      body = el('div', { class: 'panel muted', text: 'No emails found for ' + G.describe(spec()) + ' in this mailbox.' });
     } else {
       body = el('ul', { class: 'rows' }, list.items.map(function (it) {
         var verb = it.direction === 'out' ? 'Sent' : 'Received';
@@ -355,7 +479,13 @@
       el('span', { class: 'muted small', text: list.items.length + ' shown' })
     ]) : null;
     var keepScroll = app.querySelector('.rows') ? app.querySelector('.rows').scrollTop : 0;
-    return show([noticeNode(), body, more, footer()]).then(function () {
+    var warn = [];
+    if (G.sharedIgnored(spec())) warn.push('Shared addresses are ignored until a matter keyword is added.');
+    if (state.label && state.labelNames && state.labelNames.length && !G.labelKnown(state.label, state.labelNames)) {
+      warn.push('There is no Gmail label "' + state.label + '" in ' + (account || 'this mailbox') + '.');
+    }
+    var warnNode = warn.length ? el('div', { class: 'notice', role: 'status', text: warn.join(' ') }) : null;
+    return show([noticeNode(), warnNode, body, more, footer()]).then(function () {
       var rows = app.querySelector('.rows');
       if (rows && keepScroll) rows.scrollTop = keepScroll;
     });
@@ -369,7 +499,7 @@
     list.loadingMore = true;
     state.notice = '';
     drawList();
-    G.recentInteractions(state.session.access_token, state.emails, rowsPerPage(), undefined, list.nextPageToken).then(function (result) {
+    G.recentInteractions(state.session.access_token, spec(), rowsPerPage(), undefined, list.nextPageToken).then(function (result) {
       if (mine !== seq || state.list !== list) return;
       list.items = G.mergeItems(list.items, result.items);
       list.nextPageToken = result.nextPageToken;
@@ -418,11 +548,12 @@
   function draw() {
     var mine = ++seq;
     if (!configOk()) return drawSetup();
-    if (state.editing || !state.emails.length) return drawEditor();
+    if (state.editing || !G.hasSource(spec())) return drawEditor();
     if (!isLive(state.session)) return drawConnect();
 
     drawLoading();
-    G.recentInteractions(state.session.access_token, state.emails, rowsPerPage()).then(function (result) {
+    ensureLabelNames();
+    G.recentInteractions(state.session.access_token, spec(), rowsPerPage()).then(function (result) {
       if (mine !== seq) return;
       state.list = { items: result.items, nextPageToken: result.nextPageToken, loadingMore: false };
       drawList();
@@ -437,12 +568,16 @@
     return Promise.all([
       loadEmails(),
       loadSession(),
-      t.card('name', 'desc').then(function (c) { return G.extractEmails((c.name || '') + '\n' + (c.desc || '')); }).catch(function () { return []; })
+      t.card('name', 'desc').then(function (c) { return G.extractEmails((c.name || '') + '\n' + (c.desc || '')); }).catch(function () { return []; }),
+      loadMatter()
     ]).then(function (r) {
       state.emails = r[0];
       // Keep an in-memory session if storage is unavailable.
       if (r[1] || !state.session) state.session = r[1];
       state.suggestions = r[2];
+      state.shared = r[3].shared;
+      state.keywords = r[3].keywords;
+      state.label = r[3].label;
       draw();
     });
   }
